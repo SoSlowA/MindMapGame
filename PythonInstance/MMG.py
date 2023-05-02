@@ -1,14 +1,68 @@
-import pygame
 from time import sleep
+
+import pygame
 
 pygame.init()
 
 _FONT = './MCFONT.ttf'
 _FONT_BASE_SIZE = 10
 
+__backpack: list[str] = []
+__hand: str = ''
+__max_backpack_num = 4
 
-__backpack = []
-__hand = None
+# TODO: 关于 ITEM 和 NODE 的 DESCRIBE 系统
+# TODO: 父子 NODE 之间的连接
+
+
+def get_hand_id():
+    return __hand
+
+
+def set_hand_id(item_id):
+    global __hand
+    if not Item.item_exist(item_id):
+        return -1
+    __hand = item_id
+    return 0
+
+
+def is_in_back(item_id):
+    return item_id in __backpack
+
+
+def is_in_hand(item_id):
+    return item_id == __hand
+
+
+def set_back_item(item_id, ind):
+    if not Item.item_exist(item_id):
+        return -1
+    if ind not in range(__max_backpack_num):
+        return -2
+    __backpack[ind] = item_id
+    return 0
+
+
+class Item:
+    _items = {}
+
+    @classmethod
+    def item_exist(cls, item_id):
+        if (item_id not in cls._items.keys()) or (cls.get_item(item_id) is None):
+            return False
+        return True
+
+    @classmethod
+    def get_item(cls, item_id):
+        return cls._items[item_id]
+
+    def __init__(self, item_id, name: str):
+        if Item.item_exist(item_id):
+            raise ValueError(f'The item id of {item_id} already exist.')
+        self.item_id = item_id
+        Item._items[item_id] = self
+        self.name = name
 
 
 class Node:
@@ -20,7 +74,7 @@ class Node:
             return False
         return True
 
-    def __init__(self, node_id, root_scene: str, father_node_id: str = ''):
+    def __init__(self, node_id, root_scene: str, father_node_id: str = '', __dont_initialize_surface: bool = False):
         if Node.node_exist(node_id):
             raise ValueError(f'The node id of {node_id} already exist.')
         Node._nodes[node_id] = self
@@ -41,10 +95,12 @@ class Node:
         self.word: str = ''
         self.describe: str = ''
         self.pygame_surface_size = (80 * self.size, 60 * self.size)
-        self.surface = pygame.Surface(self.pygame_surface_size)
+        self.surface = None if __dont_initialize_surface else pygame.Surface(self.pygame_surface_size)
         self.pygame_word_font = pygame.font.SysFont('kaiti', _FONT_BASE_SIZE * 2 * self.size)
         self.pygame_font = pygame.font.SysFont('kaiti', _FONT_BASE_SIZE)
-        self.surface.fill('white')
+        self.command = None
+        if not __dont_initialize_surface:
+            self.surface.fill('white')
         if not self.father_node_id:
             Scene.get_scene(root_scene).add_node(node_id)
 
@@ -92,6 +148,11 @@ class Node:
                  -6 -> 不存在 node id 为 node_id 的子节点
                  -1 ~ -5 -> add_son_node 报错，对应 add_son_node
         """
+        if not node_id:
+            if self.father_node_id:
+                Node.get_node(self.father_node_id).remove_son(node_id)
+            else:
+                return 0
         if not Node.node_exist(node_id):
             return -6
         return Node.get_node(node_id).add_son_node(self.node_id)
@@ -136,16 +197,28 @@ class Node:
         for son in self.son_node_ids:
             Node.get_node(son).rule_show()
 
-    def son_shown_show(self):
-        for son in self.son_node_ids:
-            if Node.get_node(son).is_shown():
-                Node.get_node(son).rule_show()
-
-    def on_click(self):  # TODO: 各个子类的函数
-        return
-
     def pygame_surface_update(self) -> pygame.Surface:
         pass
+
+    def get_sons(self):
+        return self.son_node_ids
+
+    def get_shown_sons(self):
+        __re = []
+        for nid in self.son_node_ids:
+            if Node.get_node(nid).is_shown():
+                __re.append(nid)
+        return __re
+
+    def remove(self):
+        self.hide()
+        Node.get_node(self.father_node_id).remove_son(self.node_id)
+
+    def remove_son(self, node_id):
+        if node_id not in self.son_node_ids:
+            return -1  # 没有这个子节点
+        self.son_node_ids.remove(node_id)
+        Node.get_node(node_id).father_node_id = ''
 
 
 class RoomNode(Node):
@@ -158,6 +231,8 @@ class RoomNode(Node):
         super().__init__(node_id, root_scene, father_node_id)
         RoomNode._room_nodes[node_id] = self
         self.type = 1
+        self.command = self.son_show
+        self.opened: bool = False
 
     @classmethod
     def node_exist(cls, node_id):
@@ -169,15 +244,21 @@ class RoomNode(Node):
     def get_node(cls, node_id):
         return cls._room_nodes[node_id]
 
-    def on_click(self):
-        self.son_show()
-
     def pygame_surface_update(self) -> pygame.Surface:
         surface = self.surface
+        surface.fill('white')
         pygame.draw.rect(surface, 'black', (0, 0, 80 * self.size, 60 * self.size), 3, self.size * 5)
         word = self.pygame_word_font.render(self.word, True, 'black')
         surface.blit(word, (40 * self.size - word.get_size()[0] * 0.5, 30 * self.size - word.get_size()[1] * 0.5))
         return surface
+
+    def rule_show(self):
+        for rule in self.show_rules:
+            if not rule:
+                return -1
+        self.show()
+        if self.opened:
+            self.son_show()
 
 
 class InterNode(Node):
@@ -190,7 +271,6 @@ class InterNode(Node):
         super().__init__(node_id, root_scene, father_node_id)
         InterNode._inter_nodes[node_id] = self
         self.type = 2
-        self.command = None
 
     @classmethod
     def node_exist(cls, node_id):
@@ -202,12 +282,15 @@ class InterNode(Node):
     def get_node(cls, node_id):
         return cls._inter_nodes[node_id]
 
-    def on_click(self):
-        self.command()
-
     def pygame_surface_update(self) -> pygame.Surface:
         surface = self.surface
-        pygame.draw.polygon(surface, 'black', ((10 * self.size, 0), (80 * self.size, 0), (70 * self.size, 60 * self.size), (0, 60 * self.size)), 3)
+        surface.fill('white')
+        pygame.draw.polygon(
+            surface,
+            'black',
+            ((10 * self.size, 0), (80 * self.size, 0), (70 * self.size, 60 * self.size), (0, 60 * self.size)),
+            3
+        )
         word = self.pygame_word_font.render(self.word, True, 'black')
         surface.blit(word, (40 * self.size - word.get_size()[0] * 0.5, 30 * self.size - word.get_size()[1] * 0.5))
         return surface
@@ -237,22 +320,29 @@ class ContNode(InterNode):
 
     def pygame_surface_update(self) -> pygame.Surface:
         surface = self.surface
+        surface.fill('white')
         pygame.draw.rect(surface, 'black', (0, 0, 80 * self.size, 60 * self.size), 3, self.size * 30)
         word = self.pygame_word_font.render(self.word, True, 'black')
         surface.blit(word, (40 * self.size - word.get_size()[0] * 0.5, 30 * self.size - word.get_size()[1] * 0.5))
         return surface
 
 
-class ItemNode(Node):  # TODO: 渲染&拾起&放置
+class ItemNode(Node):
     """
     物品（可拾取），对应为圆形
     """
     _item_nodes = {}
 
-    def __init__(self, node_id, root_scene, father_node_id: str = ''):
-        super().__init__(node_id, root_scene, father_node_id)
+    def __init__(self, node_id, root_scene, father_node_id: str = '', item_id: str = ''):
+        super().__init__(node_id, root_scene, father_node_id, True)
         ItemNode._item_nodes[node_id] = self
         self.type = 4
+        self.pygame_surface_size = (60 * self.size, 60 * self.size)
+        self.surface = pygame.Surface(self.pygame_surface_size)
+        self.item_id = item_id
+
+    def set_item(self, item_id: str):
+        self.item_id = item_id
 
     @classmethod
     def node_exist(cls, node_id):
@@ -263,6 +353,20 @@ class ItemNode(Node):  # TODO: 渲染&拾起&放置
     @classmethod
     def get_node(cls, node_id):
         return cls._item_nodes[node_id]
+
+    def pygame_surface_update(self) -> pygame.Surface:
+        surface = self.surface
+        surface.fill('white')
+        pygame.draw.circle(surface, 'black', (30 * self.size, 30 * self.size), 30, 3)
+        word = self.pygame_word_font.render(self.word, True, 'black')
+        surface.blit(word, (30 * self.size - word.get_size()[0] * 0.5, 30 * self.size - word.get_size()[1] * 0.5))
+        return surface
+
+    def pick_up(self):
+        if get_hand_id():
+            return -1  # 手上已经有了东西
+        set_hand_id(self.item_id)
+        return 0
 
 
 class Scene:  # TODO: 完成渲染 + 操作
@@ -296,10 +400,8 @@ class Scene:  # TODO: 完成渲染 + 操作
         for _node in self.nodes:
             current_node = Node.get_node(_node)
             current_node.rule_show()
-            # print('显示 NODE，他的 ID 为：', _node)
             if current_node.is_shown():
                 current_node.pygame_surface_update()
-                # print(current_node.pos)
                 self.pygame_display.blit(current_node.surface, current_node.pos)
 
 
@@ -345,9 +447,9 @@ class Rule:
 
     def __init__(self, rule_id):
         if Rule.rule_exist(rule_id):
-            raise ValueError(f'The node id of {rule_id} already exist.')
+            raise ValueError(f'The rule id of {rule_id} already exist.')
         self.type = 0
-        """0 -> 默认\n1 -> 比较\n2 -> 逻辑运算"""
+        """0 -> 默认\n1 -> 比较\n2 -> 逻辑运算\n3 -> 背包/手上 Item 判断"""
         self.rule_id = rule_id
         Rule._rules[rule_id] = self
 
@@ -429,24 +531,52 @@ class RuleLogic(Rule):
         return cls._l_rules[rule_id]
 
 
+class RuleItem(Rule):
+    _i_rules = {}
+
+    def __init__(self, rule_id, b_type, item_id):
+        super().__init__(rule_id)
+        self.type = 3
+        RuleItem._i_rules[rule_id] = self
+        self.b_type = b_type
+        """1-> 在手上？，2-> 在背包里 (含手)？，3-> 在背包里 (不含手)？"""
+        self.item_id = item_id
+
+    def judge(self):
+        if self.b_type == 1:
+            return is_in_hand(self.item_id)
+        if self.b_type == 2:
+            return is_in_hand(self.item_id) or is_in_back(self.item_id)
+        if self.b_type == 3:
+            return is_in_back(self.item_id)
+        return False
+
+    @classmethod
+    def rule_exist(cls, rule_id):
+        return rule_id in cls._i_rules.keys() and cls._i_rules[rule_id] is not None
+
+    @classmethod
+    def get_rule(cls, rule_id):
+        return cls._i_rules[rule_id]
+
+
+# TODO: 按键 HOOK
+
+
 if __name__ == '__main__':  # TEST
     pygame.display.set_caption('MindMapGame Demo')
     screen = pygame.display.set_mode((800, 600))
     scene1 = Scene('scene1')
     node_r = create_node('scene1', 'node2', RoomNode, (100.0, 100.0))
-    node_r.add_son_node('node1')
-    node = InterNode('node1', 'scene1', 'node2')
+    node = ItemNode('node1', 'scene1', )
     node.set_pos(10.0, 100.0)
     node.set_word('阿爸')
-    # print(node.father_node_id)
-    # print(id(node.surface), id(node_r.surface))
     while True:
         scene1.display_update()
         screen.blit(scene1.pygame_display, (0, 0))
-        # screen.blit(node.pygame_surface_update(), (100, 100))
         pygame.display.update()
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
                 exit()
-        sleep(1/20)
+        sleep(1 / 20)
